@@ -91,11 +91,48 @@
 - Added 5 CPT-specific tests (batch consistency, loss aversion, mixed gains/losses)
 - All 36 tests passing
 
+## Session 4: Bayesian Stacking (2026-03-01)
+
+**Built:**
+- New module `src/stacking/bayesian.py` with PyMC implementation
+- Dirichlet prior on weights (uniform, α=1)
+- Binomial likelihood using sample sizes from `n` column
+- 8 new tests — all passing (44 total)
+
+**Model:**
+```
+weights ~ Dirichlet(1, 1, 1, 1)
+mu = oof_predictions @ weights
+y ~ Binomial(n, mu)
+```
+
+**Results — Bayesian stacking (4 chains × 2000 draws):**
+| Model | Mean | Std | 94% HDI |
+|-------|------|-----|---------|
+| EV | 1.1% | 0.8% | [0.0%, 2.4%] |
+| EU | 0.2% | 0.2% | [0.0%, 0.6%] |
+| PT | 41.4% | 1.7% | [38.1%, 44.5%] |
+| **CPT** | **57.3%** | **1.7%** | **[54.1%, 60.3%]** |
+
+**Diagnostics:**
+- R-hat: 1.0000 (perfect convergence)
+- Min ESS: 1525 (well above 400 threshold)
+
+**Key finding:**
+- CPT's 94% HDI excludes 0.5 — we're >97% confident CPT gets majority weight
+- This is a **statistically significant** result, not just a point estimate
+- The uncertainty is tight (±1.7%) — 14,568 problems give precise posteriors
+
+**Comparison to frequentist:**
+- Frequentist: CPT 55.1%, PT 44.9%
+- Bayesian: CPT 57.3% [54.1%, 60.3%], PT 41.4% [38.1%, 44.5%]
+- Slight difference due to Binomial likelihood vs MSE loss
+
 ## Next Steps
 
 1. ~~Vectorize CPT~~ ✓
-2. Bayesian stacking (Dirichlet posterior over weights)
-3. Hierarchical stacking with 4 models
+2. ~~Bayesian stacking~~ ✓
+3. Hierarchical Bayesian stacking (weights vary by problem features)
 4. Add MOT (Mixture of Theories)
-5. Della HPC for Bayesian runs
+5. Della HPC for full runs
 6. Paper figures
