@@ -41,7 +41,19 @@ export PYTENSOR_FLAGS="device=cpu,floatX=float64"
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # --- Change to repo directory ---
-cd $SLURM_SUBMIT_DIR/..
+# SLURM_SUBMIT_DIR is where sbatch was called from
+# If submitted from repo root: stay there
+# If submitted from slurm/: go up one level
+if [ -f "$SLURM_SUBMIT_DIR/pyproject.toml" ]; then
+    cd "$SLURM_SUBMIT_DIR"
+elif [ -f "$SLURM_SUBMIT_DIR/../pyproject.toml" ]; then
+    cd "$SLURM_SUBMIT_DIR/.."
+else
+    echo "ERROR: Cannot find repo root (pyproject.toml)"
+    echo "Submit from repo directory: cd /path/to/choices13k-stacking && sbatch slurm/run_bayesian.slurm"
+    exit 1
+fi
+echo "Working directory: $(pwd)"
 
 # --- Create results directory ---
 mkdir -p results
