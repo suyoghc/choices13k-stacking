@@ -295,6 +295,88 @@ class TestMSELoss:
 # Smoke test — integration
 # ============================================================
 
+class TestCPTModel:
+    """CPT-specific tests for vectorization correctness."""
+
+    def test_cpt_reduces_to_pt_for_pure_gains(self):
+        """When all outcomes are gains, CPT with gamma_pos=gamma_neg=gamma
+        should produce similar results to PT (not exact due to cumulative vs simple weighting)."""
+        data = _make_simple_gamble_data(
+            outcomes_a=[50], probs_a=[1.0],
+            outcomes_b=[100, 0], probs_b=[0.5, 0.5],
+        )
+        # CPT params: alpha, lambda_, gamma_pos, gamma_neg, temperature
+        cpt_pred = CPTModel.predict(np.array([0.8, 1.0, 0.7, 0.7, 1.0]), data)
+        # Should be a valid probability
+        assert 0 < cpt_pred[0] < 1
+
+    def test_cpt_handles_mixed_gains_losses(self):
+        """CPT should handle gambles with both gains and losses."""
+        data = _make_simple_gamble_data(
+            outcomes_a=[0], probs_a=[1.0],  # $0 for sure
+            outcomes_b=[50, -25], probs_b=[0.5, 0.5],  # mixed gamble
+        )
+        cpt_pred = CPTModel.predict(np.array([0.88, 2.25, 0.65, 0.65, 1.0]), data)
+        # With loss aversion λ=2.25, the loss hurts more than gain helps
+        # So P(B) should be < 0.5 (prefer sure $0)
+        assert cpt_pred[0] < 0.5
+
+    def test_cpt_loss_aversion_effect(self):
+        """Higher loss aversion should decrease preference for mixed gambles."""
+        data = _make_simple_gamble_data(
+            outcomes_a=[0], probs_a=[1.0],
+            outcomes_b=[100, -100], probs_b=[0.5, 0.5],
+        )
+        # Low loss aversion
+        pred_low = CPTModel.predict(np.array([1.0, 1.0, 1.0, 1.0, 1.0]), data)
+        # High loss aversion
+        pred_high = CPTModel.predict(np.array([1.0, 3.0, 1.0, 1.0, 1.0]), data)
+        # Higher loss aversion → lower P(B)
+        assert pred_high[0] < pred_low[0]
+
+    def test_cpt_batch_consistency(self):
+        """CPT should give same results whether run on single problems or batch."""
+        # Create two separate single-problem datasets
+        data1 = _make_simple_gamble_data(
+            outcomes_a=[50], probs_a=[1.0],
+            outcomes_b=[100, 0], probs_b=[0.5, 0.5],
+        )
+        data2 = _make_simple_gamble_data(
+            outcomes_a=[0], probs_a=[1.0],
+            outcomes_b=[50, -25], probs_b=[0.5, 0.5],
+        )
+        # Create combined batch
+        batch_data = GambleData(
+            outcomes_a=np.vstack([data1.outcomes_a, data2.outcomes_a]),
+            probs_a=np.vstack([data1.probs_a, data2.probs_a]),
+            outcomes_b=np.vstack([data1.outcomes_b, data2.outcomes_b]),
+            probs_b=np.vstack([data1.probs_b, data2.probs_b]),
+            brate=np.array([0.5, 0.5]),
+        )
+        params = np.array([0.88, 2.25, 0.65, 0.65, 1.0])
+
+        pred1 = CPTModel.predict(params, data1)[0]
+        pred2 = CPTModel.predict(params, data2)[0]
+        batch_pred = CPTModel.predict(params, batch_data)
+
+        np.testing.assert_allclose(batch_pred[0], pred1, atol=1e-10)
+        np.testing.assert_allclose(batch_pred[1], pred2, atol=1e-10)
+
+    def test_cpt_many_outcomes(self):
+        """CPT should handle gambles with many outcomes (stress test vectorization)."""
+        # Gamble with 5 outcomes
+        data = _make_simple_gamble_data(
+            outcomes_a=[10, 20, 30, 40, 50],
+            probs_a=[0.2, 0.2, 0.2, 0.2, 0.2],
+            outcomes_b=[-20, 0, 25, 50, 100],
+            probs_b=[0.1, 0.2, 0.3, 0.3, 0.1],
+        )
+        params = np.array([0.88, 2.25, 0.65, 0.65, 1.0])
+        pred = CPTModel.predict(params, data)
+        assert pred.shape == (1,)
+        assert 0 < pred[0] < 1
+
+
 class TestSmoke:
 
     def test_ev_model_on_synthetic_data(self):

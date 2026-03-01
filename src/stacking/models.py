@@ -254,12 +254,11 @@ class CPTModel:
     Like PT but applies probability weighting to cumulative probabilities,
     with separate weighting for gains and losses.
 
-    Simplified vectorized version: uses the same KT weighting as PT
-    but applied to cumulative probabilities from each tail.
-    For the padded array format, we approximate CPT by:
-    1. Sorting outcomes per gamble
-    2. Computing cumulative weights from each direction
-    3. Deriving decision weights as differences
+    Fully vectorized: no per-problem loops.
+    1. Sort outcomes per gamble (ascending: worst to best)
+    2. Losses: forward cumsum, apply weighting, take differences
+    3. Gains: reverse cumsum, apply weighting, take differences
+    4. Multiply decision weights by utilities, sum
     """
 
     name = "CPT"
@@ -273,63 +272,62 @@ class CPTModel:
     def predict(params: np.ndarray, gamble_data: GambleData) -> np.ndarray:
         alpha, lambda_, gamma_pos, gamma_neg, temperature = params
 
-        def utility(x):
-            pos = np.maximum(x, 0) ** alpha
-            neg = -lambda_ * np.maximum(-x, 0) ** alpha
-            return np.where(x >= 0, pos, neg)
+        def cpt_value_vectorized(outcomes, probs):
+            """Fully vectorized CPT value computation.
 
-        def cpt_value_batch(outcomes, probs):
-            """Vectorized CPT values for a batch of gambles."""
-            n = outcomes.shape[0]
-            values = np.zeros(n)
-            # Pre-sort each row by outcome value
+            No loops — all operations are numpy array ops.
+            """
+            n, max_k = outcomes.shape
+
+            # Sort outcomes ascending (worst to best)
             order = np.argsort(outcomes, axis=1)
-            x_sorted = np.take_along_axis(outcomes, order, axis=1)
-            p_sorted = np.take_along_axis(probs, order, axis=1)
+            x = np.take_along_axis(outcomes, order, axis=1)
+            p = np.take_along_axis(probs, order, axis=1)
 
-            u_vals = utility(x_sorted)
-            active = p_sorted > 0  # mask out padding
+            # Utility function (vectorized)
+            u = np.where(
+                x >= 0,
+                np.power(np.maximum(x, 0), alpha),
+                -lambda_ * np.power(np.maximum(-x, 0), alpha)
+            )
 
-            for i in range(n):
-                mask = active[i]
-                if not np.any(mask):
-                    continue
-                xs = x_sorted[i, mask]
-                ps = p_sorted[i, mask]
-                us = u_vals[i, mask]
-                k = len(xs)
+            # Masks for active outcomes, gains, losses
+            active = p > 0
+            is_gain = (x >= 0) & active
+            is_loss = (x < 0) & active
 
-                # Gains: outcomes >= 0, cumulate from the top (best first)
-                gain_mask = xs >= 0
-                # Losses: outcomes < 0, cumulate from the bottom (worst first)
-                loss_mask = xs < 0
+            # === LOSSES: forward cumulative (worst first) ===
+            # Zero out non-loss probs so they don't contribute to cumsum
+            p_loss = np.where(is_loss, p, 0.0)
+            cum_loss = np.cumsum(p_loss, axis=1)
+            # Shifted cumulative (previous position)
+            cum_loss_prev = np.concatenate(
+                [np.zeros((n, 1)), cum_loss[:, :-1]], axis=1
+            )
+            # Apply weighting and compute decision weights
+            w_cum = _kt_weight(cum_loss, gamma_neg)
+            w_cum_prev = _kt_weight(cum_loss_prev, gamma_neg)
+            dw_loss = np.where(is_loss, w_cum - w_cum_prev, 0.0)
 
-                # Decision weights for gains (reverse cumulative)
-                if np.any(gain_mask):
-                    gp = ps[gain_mask][::-1]
-                    gu = us[gain_mask][::-1]
-                    gc = np.clip(np.cumsum(gp), 0, 1)
-                    wc = _kt_weight(gc, gamma_pos)
-                    dw = np.empty_like(wc)
-                    dw[0] = wc[0]
-                    dw[1:] = wc[1:] - wc[:-1]
-                    values[i] += np.sum(dw * gu)
+            # === GAINS: reverse cumulative (best first) ===
+            # Zero out non-gain probs
+            p_gain = np.where(is_gain, p, 0.0)
+            # Reverse cumsum: flip, cumsum, flip back
+            cum_gain = np.cumsum(p_gain[:, ::-1], axis=1)[:, ::-1]
+            # Shifted (next position, excluding current)
+            cum_gain_next = np.concatenate(
+                [cum_gain[:, 1:], np.zeros((n, 1))], axis=1
+            )
+            # Apply weighting and compute decision weights
+            w_cum = _kt_weight(cum_gain, gamma_pos)
+            w_cum_next = _kt_weight(cum_gain_next, gamma_pos)
+            dw_gain = np.where(is_gain, w_cum - w_cum_next, 0.0)
 
-                # Decision weights for losses (forward cumulative)
-                if np.any(loss_mask):
-                    lp = ps[loss_mask]
-                    lu = us[loss_mask]
-                    lc = np.clip(np.cumsum(lp), 0, 1)
-                    wc = _kt_weight(lc, gamma_neg)
-                    dw = np.empty_like(wc)
-                    dw[0] = wc[0]
-                    dw[1:] = wc[1:] - wc[:-1]
-                    values[i] += np.sum(dw * lu)
+            # Total value: sum of (decision weight * utility)
+            return np.sum((dw_loss + dw_gain) * u, axis=1)
 
-            return values
-
-        va = cpt_value_batch(gamble_data.outcomes_a, gamble_data.probs_a)
-        vb = cpt_value_batch(gamble_data.outcomes_b, gamble_data.probs_b)
+        va = cpt_value_vectorized(gamble_data.outcomes_a, gamble_data.probs_a)
+        vb = cpt_value_vectorized(gamble_data.outcomes_b, gamble_data.probs_b)
         return sigmoid(temperature * (vb - va))
 
 

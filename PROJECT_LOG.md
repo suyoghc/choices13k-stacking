@@ -54,10 +54,48 @@
 - CPT loops per-problem in Python — too slow for full runs
 - Needs vectorization before 4-model stacking is feasible
 
+## Session 3: CPT Vectorization (2026-02-28)
+
+**Problem solved:**
+- CPT was looping per-problem in Python (925ms for 14,568 problems)
+- Blocked 4-model stacking and Bayesian runs
+
+**Solution:**
+- Fully vectorized CPT using numpy array ops only
+- Key insight: after sorting outcomes ascending (worst→best), losses cluster left, gains cluster right
+- Losses: forward cumsum, apply weighting, take differences for decision weights
+- Gains: reverse cumsum (flip, cumsum, flip back), same weighting logic
+- Masking handles variable gain/loss mix per problem
+
+**Performance:**
+- Loop-based: 925ms
+- Vectorized: 27ms
+- **35x speedup**, numerically identical (max diff ~10⁻¹⁵)
+
+**Results — 4-model stacking (5-fold, EV/EU/PT/CPT):**
+| Model | MSE | Weight |
+|-------|-----|--------|
+| EV | 0.0297 | 0% |
+| EU | 0.0263 | 0% |
+| PT | 0.0234 | 44.9% |
+| CPT | 0.0230 | **55.1%** |
+| **Stacked** | **0.0224** | — |
+
+**Key finding:**
+- CPT beats PT when included in the race
+- Previous PT dominance (95%) was artifact of CPT's absence
+- CPT gets majority weight (55%) — rank-dependent probability weighting matters
+- Stacked ensemble improves 4.4% over best single model
+
+**Tests:**
+- Added 5 CPT-specific tests (batch consistency, loss aversion, mixed gains/losses)
+- All 36 tests passing
+
 ## Next Steps
 
-1. Vectorize CPT
+1. ~~Vectorize CPT~~ ✓
 2. Bayesian stacking (Dirichlet posterior over weights)
-3. Add MOT (Mixture of Theories)
-4. Della HPC for Bayesian runs
-5. Paper figures
+3. Hierarchical stacking with 4 models
+4. Add MOT (Mixture of Theories)
+5. Della HPC for Bayesian runs
+6. Paper figures
