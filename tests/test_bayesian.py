@@ -164,3 +164,126 @@ class TestPyMCMissing:
 
         with pytest.raises(ImportError, match="pip install"):
             bayesian_module._check_pymc_available()
+
+
+# =============================================================================
+# HIERARCHICAL BAYESIAN STACKING TESTS
+# =============================================================================
+
+
+class TestHierarchicalBayesianWeights:
+    """Test hierarchical Bayesian stacking."""
+
+    def test_baseline_weights_sum_to_one(self):
+        """Baseline weights must sum to 1."""
+        from stacking.bayesian import (
+            run_hierarchical_bayesian,
+            HierarchicalBayesianConfig,
+        )
+
+        rng = np.random.RandomState(42)
+        n, k, p = 100, 3, 2
+        preds = np.clip(rng.rand(n, k), 0.01, 0.99)
+        targets = rng.rand(n)
+        sample_sizes = rng.randint(20, 30, size=n)
+        features = rng.randn(n, p)
+
+        config = HierarchicalBayesianConfig(
+            n_samples=200, n_tune=100, n_chains=2
+        )
+        results = run_hierarchical_bayesian(
+            preds, targets, sample_sizes, features,
+            ["M1", "M2", "M3"], ["F1", "F2"], config
+        )
+
+        np.testing.assert_allclose(
+            results.baseline_weight_means.sum(), 1.0, atol=1e-6
+        )
+
+    def test_per_problem_weights_sum_to_one(self):
+        """Per-problem weights must sum to 1 for each problem."""
+        from stacking.bayesian import (
+            run_hierarchical_bayesian,
+            HierarchicalBayesianConfig,
+        )
+
+        rng = np.random.RandomState(42)
+        n, k, p = 100, 3, 2
+        preds = np.clip(rng.rand(n, k), 0.01, 0.99)
+        targets = rng.rand(n)
+        sample_sizes = rng.randint(20, 30, size=n)
+        features = rng.randn(n, p)
+
+        config = HierarchicalBayesianConfig(
+            n_samples=200, n_tune=100, n_chains=2
+        )
+        results = run_hierarchical_bayesian(
+            preds, targets, sample_sizes, features,
+            ["M1", "M2", "M3"], ["F1", "F2"], config
+        )
+
+        row_sums = results.weights_per_problem.sum(axis=1)
+        np.testing.assert_allclose(row_sums, 1.0, atol=1e-6)
+
+    def test_beta_shape_correct(self):
+        """Beta should have shape (n_features, n_models-1)."""
+        from stacking.bayesian import (
+            run_hierarchical_bayesian,
+            HierarchicalBayesianConfig,
+        )
+
+        rng = np.random.RandomState(42)
+        n, k, p = 100, 4, 3
+        preds = np.clip(rng.rand(n, k), 0.01, 0.99)
+        targets = rng.rand(n)
+        sample_sizes = rng.randint(20, 30, size=n)
+        features = rng.randn(n, p)
+
+        config = HierarchicalBayesianConfig(
+            n_samples=200, n_tune=100, n_chains=2
+        )
+        results = run_hierarchical_bayesian(
+            preds, targets, sample_sizes, features,
+            ["M1", "M2", "M3", "M4"], ["F1", "F2", "F3"], config
+        )
+
+        assert results.beta_means.shape == (p, k - 1)
+        assert results.beta_stds.shape == (p, k - 1)
+
+    def test_feature_affects_weights(self):
+        """When feature perfectly predicts model performance, beta should be large."""
+        from stacking.bayesian import (
+            run_hierarchical_bayesian,
+            HierarchicalBayesianConfig,
+        )
+
+        rng = np.random.RandomState(42)
+        n = 200
+        sample_sizes = np.full(n, 25)
+
+        # Feature determines which model is best
+        feature = rng.choice([0, 1], size=n)
+        features = feature.reshape(-1, 1).astype(float)
+
+        # Model 0 is perfect when feature=0, Model 1 when feature=1
+        targets = np.clip(rng.rand(n) * 0.3 + 0.35, 0.1, 0.9)
+        preds = np.column_stack([
+            np.where(feature == 0, targets, 0.5),
+            np.where(feature == 1, targets, 0.5),
+        ])
+
+        config = HierarchicalBayesianConfig(
+            n_samples=500, n_tune=200, n_chains=2
+        )
+        results = run_hierarchical_bayesian(
+            preds, targets, sample_sizes, features,
+            ["M0", "M1"], ["indicator"], config
+        )
+
+        # Beta for the feature should be non-zero (M0 weight decreases with feature)
+        # M1 is reference, so beta affects M0
+        # When feature=1, M1 is better, so M0 weight should decrease
+        # This means beta[0, 0] should be negative
+        assert abs(results.beta_means[0, 0]) > 0.1, (
+            f"Expected significant beta, got {results.beta_means[0, 0]}"
+        )

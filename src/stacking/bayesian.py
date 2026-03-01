@@ -232,3 +232,299 @@ def print_bayesian_results(results: BayesianStackingResults) -> None:
     if results.weight_hdi_low[max_idx] > 0.5:
         print(f"\n  {results.model_names[max_idx]} clearly dominates "
               f"(HDI excludes 0.5)")
+
+
+# =============================================================================
+# HIERARCHICAL BAYESIAN STACKING
+# Weights vary by problem features: w_k(x) = softmax(intercept + X @ beta)
+# =============================================================================
+
+
+@dataclass
+class HierarchicalBayesianConfig:
+    """Configuration for hierarchical Bayesian stacking."""
+
+    # MCMC settings
+    n_samples: int = 2000
+    n_tune: int = 1000
+    n_chains: int = 4
+    target_accept: float = 0.95  # higher for hierarchical models
+    random_seed: int = 42
+
+    # Prior settings
+    intercept_sd: float = 2.0      # prior SD on intercepts
+    beta_sd_prior: float = 1.0     # prior on sigma_beta (hierarchical shrinkage)
+
+
+@dataclass
+class HierarchicalBayesianResults:
+    """Results from hierarchical Bayesian stacking."""
+
+    # Posterior samples
+    idata: "az.InferenceData"
+
+    # Baseline weights (intercept only, averaged over posterior)
+    baseline_weight_means: np.ndarray   # (n_models,)
+    baseline_weight_stds: np.ndarray    # (n_models,)
+
+    # Beta coefficients: how features shift weights
+    beta_means: np.ndarray              # (n_features, n_models-1)
+    beta_stds: np.ndarray               # (n_features, n_models-1)
+
+    # Per-problem weights (posterior means)
+    weights_per_problem: np.ndarray     # (n_problems, n_models)
+
+    # Model info
+    model_names: list
+    feature_names: list
+
+    # Diagnostics
+    r_hat_max: float
+    ess_min: float
+
+
+def build_hierarchical_model(
+    oof_predictions: np.ndarray,
+    observed_brate: np.ndarray,
+    sample_sizes: np.ndarray,
+    features: np.ndarray,
+    config: HierarchicalBayesianConfig,
+) -> "pm.Model":
+    """Build PyMC model for hierarchical Bayesian stacking.
+
+    Model:
+        sigma_beta ~ HalfNormal(beta_sd_prior)
+        beta ~ Normal(0, sigma_beta)           # (n_features, n_models-1)
+        intercept ~ Normal(0, intercept_sd)    # (n_models-1)
+        logits = intercept + features @ beta   # last model is reference
+        weights = softmax(logits)              # (n_problems, n_models)
+        mu = sum(oof_predictions * weights)
+        y ~ Binomial(n, mu)
+
+    Args:
+        oof_predictions: (n_problems, n_models) out-of-fold predictions
+        observed_brate: (n_problems,) observed choice proportions
+        sample_sizes: (n_problems,) number of participants
+        features: (n_problems, n_features) standardized problem features
+        config: Prior and MCMC settings
+
+    Returns:
+        PyMC model (not yet sampled)
+    """
+    _check_pymc_available()
+
+    n_problems, n_models = oof_predictions.shape
+    n_features = features.shape[1]
+
+    # Validate inputs
+    assert oof_predictions.shape[0] == len(observed_brate) == len(sample_sizes), (
+        "Shape mismatch in inputs"
+    )
+    assert features.shape[0] == n_problems, (
+        f"Features have {features.shape[0]} rows, expected {n_problems}"
+    )
+    assert np.all((oof_predictions >= 0) & (oof_predictions <= 1)), (
+        "OOF predictions must be probabilities in [0,1]"
+    )
+    assert np.all(sample_sizes > 0), "Sample sizes must be positive"
+
+    observed_counts = np.round(observed_brate * sample_sizes).astype(int)
+
+    with pm.Model() as model:
+        # Hierarchical shrinkage prior on beta
+        sigma_beta = pm.HalfNormal("sigma_beta", sigma=config.beta_sd_prior)
+
+        # Beta coefficients: (n_features, n_models-1)
+        # Last model is reference (beta = 0)
+        beta = pm.Normal(
+            "beta",
+            mu=0,
+            sigma=sigma_beta,
+            shape=(n_features, n_models - 1),
+        )
+
+        # Intercepts: (n_models-1)
+        intercept = pm.Normal(
+            "intercept",
+            mu=0,
+            sigma=config.intercept_sd,
+            shape=(n_models - 1,),
+        )
+
+        # Compute logits: (n_problems, n_models)
+        # Last column is 0 (reference model)
+        logits_free = intercept + pm.math.dot(features, beta)  # (n, K-1)
+        logits = pm.math.concatenate(
+            [logits_free, pm.math.zeros((n_problems, 1))],
+            axis=1,
+        )
+
+        # Softmax to get weights per problem
+        weights = pm.math.softmax(logits, axis=1)
+
+        # Stacked prediction
+        mu = pm.math.sum(oof_predictions * weights, axis=1)
+
+        # Likelihood
+        pm.Binomial("y", n=sample_sizes, p=mu, observed=observed_counts)
+
+        # Track baseline weights (intercept only, no features)
+        baseline_logits = pm.math.concatenate([intercept, pm.math.zeros((1,))])
+        pm.Deterministic(
+            "baseline_weights",
+            pm.math.softmax(baseline_logits),
+        )
+
+    return model
+
+
+def run_hierarchical_bayesian(
+    oof_predictions: np.ndarray,
+    observed_brate: np.ndarray,
+    sample_sizes: np.ndarray,
+    features: np.ndarray,
+    model_names: list,
+    feature_names: list,
+    config: Optional[HierarchicalBayesianConfig] = None,
+) -> HierarchicalBayesianResults:
+    """Run hierarchical Bayesian stacking.
+
+    Args:
+        oof_predictions: (n_problems, n_models) out-of-fold predictions
+        observed_brate: (n_problems,) observed choice proportions
+        sample_sizes: (n_problems,) from 'n' column
+        features: (n_problems, n_features) STANDARDIZED problem features
+        model_names: list of model names
+        feature_names: list of feature names
+        config: MCMC settings
+
+    Returns:
+        HierarchicalBayesianResults with posteriors on beta, intercept, weights
+    """
+    _check_pymc_available()
+
+    if config is None:
+        config = HierarchicalBayesianConfig()
+
+    n_problems, n_models = oof_predictions.shape
+    n_features = features.shape[1]
+
+    # Build and sample
+    model = build_hierarchical_model(
+        oof_predictions, observed_brate, sample_sizes, features, config
+    )
+
+    with model:
+        idata = pm.sample(
+            draws=config.n_samples,
+            tune=config.n_tune,
+            chains=config.n_chains,
+            target_accept=config.target_accept,
+            random_seed=config.random_seed,
+            return_inferencedata=True,
+            progressbar=True,
+        )
+
+    # Extract beta posteriors
+    beta_posterior = idata.posterior["beta"].values  # (chains, draws, n_feat, n_models-1)
+    beta_flat = beta_posterior.reshape(-1, n_features, n_models - 1)
+    beta_means = beta_flat.mean(axis=0)
+    beta_stds = beta_flat.std(axis=0)
+
+    # Extract intercept posteriors
+    intercept_posterior = idata.posterior["intercept"].values  # (chains, draws, n_models-1)
+    intercept_flat = intercept_posterior.reshape(-1, n_models - 1)
+
+    # Compute baseline weights from intercept posterior
+    baseline_logits = np.concatenate(
+        [intercept_flat, np.zeros((intercept_flat.shape[0], 1))],
+        axis=1,
+    )
+    baseline_weights_samples = _softmax_numpy(baseline_logits)
+    baseline_weight_means = baseline_weights_samples.mean(axis=0)
+    baseline_weight_stds = baseline_weights_samples.std(axis=0)
+
+    # Compute per-problem weights using posterior mean of beta and intercept
+    intercept_mean = intercept_flat.mean(axis=0)
+    logits_mean = np.concatenate([
+        intercept_mean + features @ beta_means,
+        np.zeros((n_problems, 1)),
+    ], axis=1)
+    weights_per_problem = _softmax_numpy(logits_mean)
+
+    # Diagnostics
+    summary = az.summary(idata, var_names=["intercept", "sigma_beta"])
+    r_hat_max = summary["r_hat"].max()
+    ess_min = summary["ess_bulk"].min()
+
+    return HierarchicalBayesianResults(
+        idata=idata,
+        baseline_weight_means=baseline_weight_means,
+        baseline_weight_stds=baseline_weight_stds,
+        beta_means=beta_means,
+        beta_stds=beta_stds,
+        weights_per_problem=weights_per_problem,
+        model_names=list(model_names),
+        feature_names=list(feature_names),
+        r_hat_max=r_hat_max,
+        ess_min=ess_min,
+    )
+
+
+def _softmax_numpy(x: np.ndarray) -> np.ndarray:
+    """Row-wise softmax, numerically stable."""
+    x_shifted = x - x.max(axis=-1, keepdims=True)
+    exp_x = np.exp(x_shifted)
+    return exp_x / exp_x.sum(axis=-1, keepdims=True)
+
+
+def print_hierarchical_bayesian_results(
+    results: HierarchicalBayesianResults,
+) -> None:
+    """Pretty-print hierarchical Bayesian stacking results."""
+    print("\n" + "=" * 60)
+    print("HIERARCHICAL BAYESIAN STACKING RESULTS")
+    print("=" * 60)
+
+    # Baseline weights
+    print("\nBaseline weights (intercept only, no features):")
+    for i, name in enumerate(results.model_names):
+        mean = results.baseline_weight_means[i]
+        std = results.baseline_weight_stds[i]
+        bar_len = int(mean * 40)
+        bar = "|" + "=" * bar_len + " " * (40 - bar_len) + "|"
+        print(f"  {name:>6s}: {mean:.3f} +/- {std:.3f}  {bar}")
+
+    # Feature effects (beta coefficients)
+    print(f"\nFeature effects on weights (vs {results.model_names[-1]}):")
+    print("  (positive = increases weight, negative = decreases)")
+    for j, fname in enumerate(results.feature_names):
+        effects = []
+        for k, mname in enumerate(results.model_names[:-1]):
+            mean = results.beta_means[j, k]
+            std = results.beta_stds[j, k]
+            # Check if credibly non-zero (HDI excludes 0)
+            sig = "*" if abs(mean) > 2 * std else ""
+            effects.append(f"{mname}={mean:+.3f}{sig}")
+        print(f"  {fname:>20s}: {', '.join(effects)}")
+
+    # Weight variation
+    weights = results.weights_per_problem
+    print(f"\nWeight variation across {weights.shape[0]} problems:")
+    for i, name in enumerate(results.model_names):
+        w = weights[:, i]
+        print(
+            f"  {name:>6s}: mean={w.mean():.3f}, "
+            f"range=[{w.min():.3f}, {w.max():.3f}], "
+            f"std={w.std():.3f}"
+        )
+
+    # Diagnostics
+    print(f"\nDiagnostics:")
+    print(f"  Max R-hat: {results.r_hat_max:.4f} (should be < 1.01)")
+    print(f"  Min ESS:   {results.ess_min:.0f} (should be > 400)")
+
+    if results.r_hat_max > 1.01:
+        print("  WARNING: R-hat too high - chains may not have converged")
+    if results.ess_min < 400:
+        print("  WARNING: ESS too low - consider more samples")

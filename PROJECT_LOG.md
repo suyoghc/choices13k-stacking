@@ -128,11 +128,59 @@ y ~ Binomial(n, mu)
 - Bayesian: CPT 57.3% [54.1%, 60.3%], PT 41.4% [38.1%, 44.5%]
 - Slight difference due to Binomial likelihood vs MSE loss
 
+## Session 5: Hierarchical Bayesian Stacking (2026-03-01)
+
+**Built:**
+- Extended `bayesian.py` with hierarchical model
+- Weights vary by problem features: `w_k(x) = softmax(intercept + X @ beta)`
+- Hierarchical shrinkage prior on beta: `sigma_beta ~ HalfNormal(1)`, `beta ~ Normal(0, sigma_beta)`
+- 4 new tests (12 total Bayesian tests), 48 tests total
+
+**Model:**
+```
+sigma_beta ~ HalfNormal(1)
+beta ~ Normal(0, sigma_beta)    # (n_features, n_models-1)
+intercept ~ Normal(0, 2)        # (n_models-1)
+logits = intercept + X @ beta   # last model is reference
+weights = softmax(logits)
+mu = sum(oof_predictions * weights)
+y ~ Binomial(n, mu)
+```
+
+**Results — hierarchical Bayesian (features: LotNumB, Amb, Corr):**
+
+Baseline weights (no features):
+| Model | Mean | Std |
+|-------|------|-----|
+| EV | 0.5% | 0.4% |
+| EU | 6.1% | 1.6% |
+| PT | 26.4% | 3.5% |
+| CPT | 67.1% | 3.0% |
+
+Feature effects (* = credibly non-zero):
+| Feature | Effect |
+|---------|--------|
+| LotNumB | PT +0.70*, EU +0.42 (more outcomes → weighting helps) |
+| Amb | EU -1.84* (ambiguity kills rational EU) |
+| Corr | PT +0.16* (correlation favors PT) |
+
+Weight variation across 14,568 problems:
+- CPT: mean=62.6%, range=[18.7%, 85.3%]
+- PT: mean=26.5%, range=[9.1%, 81.2%] — huge variation!
+- EU: mean=10.6%, range=[0.1%, 29.4%]
+
+**Key findings:**
+- CPT dominates on average but PT can reach 81% for some problems
+- Ambiguity strongly penalizes EU (rational model fails under uncertainty)
+- More lottery outcomes shift weight toward probability-weighting models (PT/CPT)
+
+**Diagnostics:** R-hat=1.00, ESS=3152 (excellent)
+
 ## Next Steps
 
 1. ~~Vectorize CPT~~ ✓
 2. ~~Bayesian stacking~~ ✓
-3. Hierarchical Bayesian stacking (weights vary by problem features)
+3. ~~Hierarchical Bayesian stacking~~ ✓
 4. Add MOT (Mixture of Theories)
 5. Della HPC for full runs
 6. Paper figures
