@@ -176,11 +176,45 @@ Weight variation across 14,568 problems:
 
 **Diagnostics:** R-hat=1.00, ESS=3152 (excellent)
 
+## Session 6: Mixture of Theories (2026-03-01)
+
+**Built:**
+- MOT model in `bayesian.py` with Beta-Binomial overdispersion
+- Interprets weights as "proportion of participants using each theory"
+- 4 new tests (52 total)
+
+**Model:**
+```
+π ~ Dirichlet(1, 1, 1, 1)   # mixture proportions
+κ ~ HalfNormal(10)           # overdispersion
+μ = oof_predictions @ π      # expected P(B) under mixture
+y ~ BetaBinomial(n, μ*κ, (1-μ)*κ)
+```
+
+**Results:**
+| Theory | Usage % | 94% HDI |
+|--------|---------|---------|
+| EV | 1.4% | [0.0%, 3.1%] |
+| EU | 0.4% | [0.0%, 1.0%] |
+| PT | 40.0% | [35.5%, 44.0%] |
+| **CPT** | **58.3%** | **[54.2%, 62.5%]** |
+
+**Overdispersion:** κ = 21.9 ± 0.6 (fairly high = mixture explains most variance)
+
+**Interpretation:**
+- 58% of participants use CPT as their decision rule
+- 40% use PT
+- Almost no one uses EU or EV (<2% combined)
+- The mixture model captures individual heterogeneity well (high κ)
+
+**Diagnostics:** R-hat = 1.00, ESS = 2176
+
 ## Next Steps
 
 1. ~~Vectorize CPT~~ ✓
 2. ~~Bayesian stacking~~ ✓
 3. ~~Hierarchical Bayesian stacking~~ ✓
-4. Add MOT (Mixture of Theories)
+4. ~~MOT (Mixture of Theories)~~ ✓
 5. Della HPC for full runs
-6. Paper figures
+6. Paper figures (done for main results)
+7. Write methods/results sections

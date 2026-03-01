@@ -478,6 +478,233 @@ def _softmax_numpy(x: np.ndarray) -> np.ndarray:
     return exp_x / exp_x.sum(axis=-1, keepdims=True)
 
 
+# =============================================================================
+# MIXTURE OF THEORIES (MOT)
+# Interprets weights as "proportion of participants using each theory"
+# =============================================================================
+
+
+@dataclass
+class MOTConfig:
+    """Configuration for Mixture of Theories model."""
+
+    # MCMC settings
+    n_samples: int = 2000
+    n_tune: int = 1000
+    n_chains: int = 4
+    target_accept: float = 0.9
+    random_seed: int = 42
+
+    # Model variant
+    use_overdispersion: bool = True  # Beta-Binomial vs Binomial
+    kappa_prior_sd: float = 10.0     # Prior on overdispersion
+
+
+@dataclass
+class MOTResults:
+    """Results from Mixture of Theories model."""
+
+    # Posterior samples
+    idata: "az.InferenceData"
+
+    # Mixture proportions (what % use each theory)
+    pi_means: np.ndarray       # (n_models,)
+    pi_stds: np.ndarray        # (n_models,)
+    pi_hdi_low: np.ndarray     # (n_models,)
+    pi_hdi_high: np.ndarray    # (n_models,)
+
+    # Overdispersion (if used)
+    kappa_mean: Optional[float]
+    kappa_std: Optional[float]
+
+    # Model info
+    model_names: list
+
+    # Diagnostics
+    r_hat_max: float
+    ess_min: float
+
+
+def build_mot_model(
+    oof_predictions: np.ndarray,
+    observed_brate: np.ndarray,
+    sample_sizes: np.ndarray,
+    config: MOTConfig,
+) -> "pm.Model":
+    """Build Mixture of Theories model.
+
+    Generative story:
+        For each problem i with n_i participants:
+        - Each participant j uses theory k with probability π_k
+        - Given theory k, they choose B with probability pred_{i,k}
+        - Marginalizing: P(B) = Σ_k π_k * pred_{i,k}
+        - Observed: y_i ~ Binomial(n_i, P(B)) or Beta-Binomial with overdispersion
+
+    The overdispersion κ captures individual heterogeneity beyond the mixture.
+
+    Args:
+        oof_predictions: (n_problems, n_models) predictions from each theory
+        observed_brate: (n_problems,) observed choice proportions
+        sample_sizes: (n_problems,) participants per problem
+        config: Model settings
+
+    Returns:
+        PyMC model
+    """
+    _check_pymc_available()
+
+    n_problems, n_models = oof_predictions.shape
+    observed_counts = np.round(observed_brate * sample_sizes).astype(int)
+
+    # Validate
+    assert np.all((oof_predictions >= 0) & (oof_predictions <= 1)), \
+        "Predictions must be probabilities"
+    assert np.all(sample_sizes > 0), "Sample sizes must be positive"
+
+    with pm.Model() as model:
+        # Mixture proportions: what fraction use each theory
+        pi = pm.Dirichlet("pi", a=np.ones(n_models))
+
+        # Expected choice probability under mixture
+        # P(B) = Σ_k π_k * pred_{i,k}
+        mu = pm.math.dot(oof_predictions, pi)
+
+        if config.use_overdispersion:
+            # Beta-Binomial: extra variance from individual differences
+            # Var(y) > n*p*(1-p) when people disagree more than binomial predicts
+            kappa = pm.HalfNormal("kappa", sigma=config.kappa_prior_sd)
+
+            # Reparameterize Beta in terms of mean and concentration
+            # Beta(α, β) where α = μ*κ, β = (1-μ)*κ
+            # Higher κ = less overdispersion (approaches Binomial)
+            alpha = mu * kappa
+            beta = (1 - mu) * kappa
+
+            pm.BetaBinomial(
+                "y",
+                alpha=alpha,
+                beta=beta,
+                n=sample_sizes,
+                observed=observed_counts,
+            )
+        else:
+            # Standard Binomial (no overdispersion)
+            pm.Binomial("y", n=sample_sizes, p=mu, observed=observed_counts)
+
+    return model
+
+
+def run_mot(
+    oof_predictions: np.ndarray,
+    observed_brate: np.ndarray,
+    sample_sizes: np.ndarray,
+    model_names: list,
+    config: Optional[MOTConfig] = None,
+) -> MOTResults:
+    """Run Mixture of Theories model.
+
+    Args:
+        oof_predictions: (n_problems, n_models) predictions
+        observed_brate: (n_problems,) observed proportions
+        sample_sizes: (n_problems,) participants per problem
+        model_names: names of theories
+        config: MCMC settings
+
+    Returns:
+        MOTResults with posterior on mixture proportions
+    """
+    _check_pymc_available()
+
+    if config is None:
+        config = MOTConfig()
+
+    model = build_mot_model(
+        oof_predictions, observed_brate, sample_sizes, config
+    )
+
+    with model:
+        idata = pm.sample(
+            draws=config.n_samples,
+            tune=config.n_tune,
+            chains=config.n_chains,
+            target_accept=config.target_accept,
+            random_seed=config.random_seed,
+            return_inferencedata=True,
+            progressbar=True,
+        )
+
+    # Extract pi posteriors
+    pi_posterior = idata.posterior["pi"].values
+    pi_flat = pi_posterior.reshape(-1, pi_posterior.shape[-1])
+
+    pi_means = pi_flat.mean(axis=0)
+    pi_stds = pi_flat.std(axis=0)
+
+    hdi = az.hdi(idata, var_names=["pi"], hdi_prob=0.94)
+    pi_hdi_low = hdi["pi"].values[:, 0]
+    pi_hdi_high = hdi["pi"].values[:, 1]
+
+    # Extract kappa if used
+    kappa_mean = None
+    kappa_std = None
+    if config.use_overdispersion:
+        kappa_posterior = idata.posterior["kappa"].values.flatten()
+        kappa_mean = kappa_posterior.mean()
+        kappa_std = kappa_posterior.std()
+
+    # Diagnostics
+    var_names = ["pi"] + (["kappa"] if config.use_overdispersion else [])
+    summary = az.summary(idata, var_names=var_names)
+    r_hat_max = summary["r_hat"].max()
+    ess_min = summary["ess_bulk"].min()
+
+    return MOTResults(
+        idata=idata,
+        pi_means=pi_means,
+        pi_stds=pi_stds,
+        pi_hdi_low=pi_hdi_low,
+        pi_hdi_high=pi_hdi_high,
+        kappa_mean=kappa_mean,
+        kappa_std=kappa_std,
+        model_names=list(model_names),
+        r_hat_max=r_hat_max,
+        ess_min=ess_min,
+    )
+
+
+def print_mot_results(results: MOTResults) -> None:
+    """Pretty-print MOT results."""
+    print("\n" + "=" * 60)
+    print("MIXTURE OF THEORIES RESULTS")
+    print("=" * 60)
+
+    print("\nTheory usage proportions (what % of participants use each):")
+    for i, name in enumerate(results.model_names):
+        mean = results.pi_means[i] * 100
+        std = results.pi_stds[i] * 100
+        lo = results.pi_hdi_low[i] * 100
+        hi = results.pi_hdi_high[i] * 100
+        bar_len = int(mean / 100 * 40)
+        bar = "|" + "=" * bar_len + " " * (40 - bar_len) + "|"
+        print(f"  {name:>6s}: {mean:.1f}% +/- {std:.1f}%  [{lo:.1f}%, {hi:.1f}%]  {bar}")
+
+    if results.kappa_mean is not None:
+        print(f"\nOverdispersion (kappa):")
+        print(f"  kappa = {results.kappa_mean:.2f} +/- {results.kappa_std:.2f}")
+        print(f"  (Higher = less individual variation beyond mixture)")
+        print(f"  (Lower = more heterogeneity, people differ beyond theory choice)")
+
+    print(f"\nDiagnostics:")
+    print(f"  Max R-hat: {results.r_hat_max:.4f} (should be < 1.01)")
+    print(f"  Min ESS:   {results.ess_min:.0f} (should be > 400)")
+
+    # Interpretation
+    max_idx = np.argmax(results.pi_means)
+    print(f"\nInterpretation:")
+    print(f"  {results.pi_means[max_idx]*100:.0f}% of participants use "
+          f"{results.model_names[max_idx]} as their decision rule")
+
+
 def print_hierarchical_bayesian_results(
     results: HierarchicalBayesianResults,
 ) -> None:

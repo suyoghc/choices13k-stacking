@@ -287,3 +287,77 @@ class TestHierarchicalBayesianWeights:
         assert abs(results.beta_means[0, 0]) > 0.1, (
             f"Expected significant beta, got {results.beta_means[0, 0]}"
         )
+
+
+# =============================================================================
+# MIXTURE OF THEORIES (MOT) TESTS
+# =============================================================================
+
+
+class TestMOT:
+    """Test Mixture of Theories model."""
+
+    def test_pi_sums_to_one(self):
+        """Mixture proportions must sum to 1."""
+        from stacking.bayesian import run_mot, MOTConfig
+
+        rng = np.random.RandomState(42)
+        n, k = 100, 3
+        preds = np.clip(rng.rand(n, k), 0.01, 0.99)
+        targets = rng.rand(n)
+        sample_sizes = rng.randint(20, 30, size=n)
+
+        config = MOTConfig(n_samples=200, n_tune=100, n_chains=2)
+        results = run_mot(preds, targets, sample_sizes, ["A", "B", "C"], config)
+
+        np.testing.assert_allclose(results.pi_means.sum(), 1.0, atol=1e-6)
+
+    def test_pi_nonnegative(self):
+        """Mixture proportions must be non-negative."""
+        from stacking.bayesian import run_mot, MOTConfig
+
+        rng = np.random.RandomState(42)
+        n, k = 100, 3
+        preds = np.clip(rng.rand(n, k), 0.01, 0.99)
+        targets = rng.rand(n)
+        sample_sizes = rng.randint(20, 30, size=n)
+
+        config = MOTConfig(n_samples=200, n_tune=100, n_chains=2)
+        results = run_mot(preds, targets, sample_sizes, ["A", "B", "C"], config)
+
+        assert np.all(results.pi_means >= 0)
+
+    def test_overdispersion_estimated(self):
+        """Kappa should be estimated when use_overdispersion=True."""
+        from stacking.bayesian import run_mot, MOTConfig
+
+        rng = np.random.RandomState(42)
+        n, k = 100, 2
+        preds = np.clip(rng.rand(n, k), 0.01, 0.99)
+        targets = rng.rand(n)
+        sample_sizes = rng.randint(20, 30, size=n)
+
+        config = MOTConfig(
+            n_samples=200, n_tune=100, n_chains=2, use_overdispersion=True
+        )
+        results = run_mot(preds, targets, sample_sizes, ["A", "B"], config)
+
+        assert results.kappa_mean is not None
+        assert results.kappa_mean > 0
+
+    def test_no_overdispersion_option(self):
+        """Should work without overdispersion."""
+        from stacking.bayesian import run_mot, MOTConfig
+
+        rng = np.random.RandomState(42)
+        n, k = 100, 2
+        preds = np.clip(rng.rand(n, k), 0.01, 0.99)
+        targets = rng.rand(n)
+        sample_sizes = rng.randint(20, 30, size=n)
+
+        config = MOTConfig(
+            n_samples=200, n_tune=100, n_chains=2, use_overdispersion=False
+        )
+        results = run_mot(preds, targets, sample_sizes, ["A", "B"], config)
+
+        assert results.kappa_mean is None
