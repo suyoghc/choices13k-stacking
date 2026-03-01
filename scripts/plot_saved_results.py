@@ -220,23 +220,26 @@ def fig4_mot_kappa(results):
 
 def fig5_diagnostics(results):
     """MCMC diagnostics."""
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    # Let arviz create its own figures for trace plots
+    # Bayesian stacking
+    axes_bayes = az.plot_trace(results["bayesian"], var_names=["weights"], compact=True)
+    fig_bayes = axes_bayes.flatten()[0].get_figure()
+    fig_bayes.suptitle("Bayesian Stacking Diagnostics", fontsize=14)
+    fig_bayes.tight_layout()
+    fig_bayes.savefig(FIGDIR / "fig5a_bayes_diagnostics.pdf", bbox_inches="tight", dpi=300)
+    fig_bayes.savefig(FIGDIR / "fig5a_bayes_diagnostics.png", bbox_inches="tight", dpi=300)
+    plt.close(fig_bayes)
 
-    # Bayesian stacking trace
-    az.plot_trace(results["bayesian"], var_names=["weights"], axes=axes[0:1, :].flatten()[:2])
-    axes[0, 0].set_title("Bayesian Stacking: Trace")
-    axes[0, 1].set_title("Bayesian Stacking: Posterior")
+    # MOT
+    axes_mot = az.plot_trace(results["mot"], var_names=["pi"], compact=True)
+    fig_mot = axes_mot.flatten()[0].get_figure()
+    fig_mot.suptitle("MOT Diagnostics", fontsize=14)
+    fig_mot.tight_layout()
+    fig_mot.savefig(FIGDIR / "fig5b_mot_diagnostics.pdf", bbox_inches="tight", dpi=300)
+    fig_mot.savefig(FIGDIR / "fig5b_mot_diagnostics.png", bbox_inches="tight", dpi=300)
+    plt.close(fig_mot)
 
-    # MOT trace
-    az.plot_trace(results["mot"], var_names=["pi"], axes=axes[1:2, :].flatten()[:2])
-    axes[1, 0].set_title("MOT: Trace")
-    axes[1, 1].set_title("MOT: Posterior")
-
-    plt.tight_layout()
-    fig.savefig(FIGDIR / "fig5_diagnostics.pdf", bbox_inches="tight", dpi=300)
-    fig.savefig(FIGDIR / "fig5_diagnostics.png", bbox_inches="tight", dpi=300)
-    print(f"  Saved: fig5_diagnostics.pdf")
-    plt.close()
+    print(f"  Saved: fig5a_bayes_diagnostics.pdf, fig5b_mot_diagnostics.pdf")
 
 
 def summary_table(results):
