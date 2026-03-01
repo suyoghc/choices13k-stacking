@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.env
+*.npz
+results/*.csv
+results/*.npz
+results/*.jsx
+.venv/
+CLAUDE.md
+
