@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from sklearn.preprocessing import StandardScaler
 from stacking.config import DataConfig, StackingConfig, ModelFitConfig
 from stacking.data import load_selections, load_problems
-from stacking.models import EVModel, EUModel, PTModel, CPTModel
+from stacking.models import EVModel, EUModel, PTModel, CPTModel, ContextModel
 from stacking.stacking import run_kfold_stacking
 from stacking.bayesian import (
     run_bayesian_stacking,
@@ -98,7 +98,7 @@ def main():
     fit_config = ModelFitConfig(n_restarts=n_restarts)
 
     freq_results = run_kfold_stacking(
-        model_classes=[EVModel, EUModel, PTModel, CPTModel],
+        model_classes=[EVModel, EUModel, PTModel, CPTModel, ContextModel],
         df=df,
         problems=problems,
         stacking_config=stacking_config,
@@ -236,9 +236,11 @@ def main():
         pickle.dump(summary, f)
 
     print("\nKey results:")
-    print(f"  Bayesian CPT weight: {bayes_results.weight_means[3]*100:.1f}% "
-          f"[{bayes_results.weight_hdi_low[3]*100:.1f}, {bayes_results.weight_hdi_high[3]*100:.1f}]")
-    print(f"  MOT CPT usage: {mot_results.pi_means[3]*100:.1f}%")
+    for i, name in enumerate(freq_results["model_names"]):
+        print(f"  Bayesian {name:>7s} weight: {bayes_results.weight_means[i]*100:.1f}% "
+              f"[{bayes_results.weight_hdi_low[i]*100:.1f}, "
+              f"{bayes_results.weight_hdi_high[i]*100:.1f}]")
+    print(f"  MOT kappa: {mot_results.kappa_mean:.1f}")
 
 
 if __name__ == "__main__":
