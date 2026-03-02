@@ -18,7 +18,7 @@ import pytest
 from stacking.config import DataConfig, StackingConfig, AnalysisConfig
 from stacking.data import load_selections, _validate_selections
 from stacking.models import (
-    EVModel, EUModel, PTModel, CPTModel,
+    EVModel, EUModel, PTModel, CPTModel, ContextModel,
     GambleData, predict_choice_probability,
 )
 from stacking.stacking import compute_stacking_weights
@@ -442,3 +442,92 @@ class TestHierarchicalStacking:
 
         # Should be at least as good as equal weights
         assert h_results["hierarchical_mse"] <= equal_mse + 1e-6
+
+
+# ============================================================
+# Context-dependent model tests
+# ============================================================
+
+class TestContextModel:
+
+    def _make_context_gamble_data(self, n=50):
+        """Helper: synthetic GambleData with features."""
+        rng = np.random.RandomState(42)
+        n_features = 16
+        return GambleData(
+            outcomes_a=rng.rand(n, 2) * 100,
+            probs_a=np.column_stack([rng.rand(n), 1 - rng.rand(n)]),
+            outcomes_b=rng.rand(n, 2) * 100,
+            probs_b=np.column_stack([rng.rand(n), 1 - rng.rand(n)]),
+            brate=rng.rand(n),
+            features=rng.randn(n, n_features),
+        )
+
+    def test_context_model_predicts_valid_probabilities(self):
+        """ContextModel predictions must be in (0, 1)."""
+        train_data = self._make_context_gamble_data(n=200)
+        test_data = self._make_context_gamble_data(n=50)
+
+        fitted = ContextModel.fit(train_data)
+        preds = ContextModel.predict(fitted, test_data)
+
+        assert preds.shape == (50,)
+        assert np.all(preds > 0) and np.all(preds < 1)
+
+    def test_context_model_requires_features(self):
+        """Should raise if features is None."""
+        data_no_features = GambleData(
+            outcomes_a=np.array([[10]]),
+            probs_a=np.array([[1.0]]),
+            outcomes_b=np.array([[20]]),
+            probs_b=np.array([[1.0]]),
+            brate=np.array([0.5]),
+        )
+        with pytest.raises(ValueError, match="features"):
+            ContextModel.fit(data_no_features)
+
+    def test_gamble_data_backward_compatible(self):
+        """Classical models still work with GambleData that has features."""
+        data = GambleData(
+            outcomes_a=np.array([[10.0, 0.0]]),
+            probs_a=np.array([[0.5, 0.5]]),
+            outcomes_b=np.array([[20.0, 0.0]]),
+            probs_b=np.array([[0.5, 0.5]]),
+            brate=np.array([0.5]),
+            features=np.array([[1.0, 2.0, 3.0]]),  # ignored by classical
+        )
+        pred = EVModel.predict(np.array([1.0]), data)
+        assert pred.shape == (1,)
+        assert 0 < pred[0] < 1
+
+    def test_context_model_in_stacking_pipeline(self):
+        """Smoke test: ContextModel works end-to-end with run_kfold_stacking."""
+        from stacking.data import load_selections, load_problems
+        from stacking.config import DataConfig, StackingConfig, ModelFitConfig
+        from stacking.stacking import run_kfold_stacking
+
+        config = DataConfig(data_dir=Path("data"))
+        try:
+            df = load_selections(config)
+            problems = load_problems(config)
+        except FileNotFoundError:
+            pytest.skip("Data files not available")
+
+        # Use small subset for speed
+        df_small = df.head(200).copy()
+        df_small["_json_idx"] = df["_json_idx"].head(200)
+
+        stacking_config = StackingConfig(n_folds=3, random_seed=42)
+        fit_config = ModelFitConfig(n_restarts=1, max_iterations=50)
+
+        results = run_kfold_stacking(
+            model_classes=[EVModel, ContextModel],
+            df=df_small,
+            problems=problems,
+            stacking_config=stacking_config,
+            fit_config=fit_config,
+        )
+
+        assert results["weights"].shape == (2,)
+        np.testing.assert_allclose(results["weights"].sum(), 1.0, atol=1e-6)
+        assert not np.any(np.isnan(results["oof_predictions"]))

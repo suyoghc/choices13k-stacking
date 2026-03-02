@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from stacking.config import DataConfig, StackingConfig, ModelFitConfig
 from stacking.data import load_selections, load_problems
-from stacking.models import EVModel, EUModel, PTModel, MODEL_REGISTRY
+from stacking.models import EVModel, EUModel, PTModel, CPTModel, ContextModel, MODEL_REGISTRY
 from stacking.stacking import run_kfold_stacking, print_stacking_results
 
 
@@ -42,8 +42,8 @@ def main():
     print(f"  {df['Problem'].nunique()} unique problems")
     print(f"  bRate range: [{df['bRate'].min():.3f}, {df['bRate'].max():.3f}]")
 
-    # --- MVP: start with 3 classic models ---
-    model_classes = [EVModel, EUModel, PTModel]
+    # --- All models including context-dependent baseline ---
+    model_classes = [EVModel, EUModel, PTModel, CPTModel, ContextModel]
     print(f"\nModels: {[m.name for m in model_classes]}")
     print(f"K-fold CV with K={stacking_config.n_folds}")
 

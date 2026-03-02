@@ -121,13 +121,24 @@ def run_kfold_stacking(
         for model_idx, model_class in enumerate(model_classes):
             print(f"    Fitting {model_class.name}...", end=" ")
 
-            params, train_loss = fit_model(
-                model_class, train_data, fit_config, loss=stacking_config.loss
-            )
-            fitted_params[model_class.name].append(params)
+            if getattr(model_class, 'is_sklearn_model', False):
+                # sklearn-style models (e.g. ContextModel): fit/predict API
+                fitted = model_class.fit(
+                    train_data, random_seed=fit_config.random_seed
+                )
+                fitted_params[model_class.name].append(fitted)
+                val_preds = model_class.predict(fitted, val_data)
+                train_preds = model_class.predict(fitted, train_data)
+                train_loss = compute_mse_loss(train_preds, train_data.brate)
+            else:
+                # Classical models: scipy MLE fitting
+                params, train_loss = fit_model(
+                    model_class, train_data, fit_config,
+                    loss=stacking_config.loss,
+                )
+                fitted_params[model_class.name].append(params)
+                val_preds = model_class.predict(params, val_data)
 
-            # Predict on held-out fold
-            val_preds = model_class.predict(params, val_data)
             oof_predictions[val_idx, model_idx] = val_preds
 
             val_mse = compute_mse_loss(val_preds, val_data.brate)

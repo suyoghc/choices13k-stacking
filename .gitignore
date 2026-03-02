@@ -12,3 +12,5 @@ results/*.jsx
 .venv/
 CLAUDE.md
 
+CHATLOG.md
+draft_methods_results.md

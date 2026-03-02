@@ -11,7 +11,7 @@ Fitting is handled separately by the optimizer module.
 """
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Optional, Protocol
 
 import numpy as np
 from scipy.special import expit as sigmoid
@@ -46,6 +46,7 @@ class GambleData:
 
     Each field is array of shape (n_problems, max_outcomes).
     Padded with zeros where a gamble has fewer outcomes.
+    Optional features array for context-dependent models.
     """
 
     outcomes_a: np.ndarray  # (n, max_outcomes)
@@ -53,6 +54,7 @@ class GambleData:
     outcomes_b: np.ndarray  # (n, max_outcomes)
     probs_b: np.ndarray     # (n, max_outcomes)
     brate: np.ndarray       # (n,) observed choice rates
+    features: Optional[np.ndarray] = None  # (n, n_features) for context models
 
 
 def prepare_gamble_data(df, problems: dict) -> GambleData:
@@ -112,13 +114,72 @@ def prepare_gamble_data(df, problems: dict) -> GambleData:
                 f"Check _json_idx mapping."
             )
 
+    # --- Context features for context-dependent models ---
+    # Cross-gamble features capture the relationship between A and B,
+    # which classical theories ignore (Peterson et al. 2021).
+    features = _build_context_features(df, outcomes_a, probs_a, outcomes_b, probs_b)
+
     return GambleData(
         outcomes_a=outcomes_a,
         probs_a=probs_a,
         outcomes_b=outcomes_b,
         probs_b=probs_b,
         brate=df["bRate"].values,
+        features=features,
     )
+
+
+def _build_context_features(df, outcomes_a, probs_a, outcomes_b, probs_b):
+    """Build context features for context-dependent models.
+
+    Includes raw gamble features, cross-gamble comparisons
+    (the key context-dependence), and design variables.
+    """
+    n = len(df)
+
+    # Raw gamble features from CSV
+    ha = df["Ha"].values.astype(float)
+    pha = df["pHa"].values.astype(float)
+    la = df["La"].values.astype(float)
+    hb = df["Hb"].values.astype(float)
+    phb = df["pHb"].values.astype(float)
+    lb = df["Lb"].values.astype(float)
+
+    # Expected values (from padded arrays, handles multi-outcome gambles)
+    ev_a = np.sum(probs_a * outcomes_a, axis=1)
+    ev_b = np.sum(probs_b * outcomes_b, axis=1)
+
+    # Cross-gamble context features (Peterson's key insight:
+    # value of one gamble depends on the alternative)
+    ev_diff = ev_a - ev_b
+    max_outcome_diff = ha - hb
+    min_outcome_diff = la - lb
+    prob_asymmetry = np.abs(pha - phb)
+    outcome_range_a = ha - la
+    outcome_range_b = hb - lb
+
+    # Design variables
+    feedback = df["Feedback"].astype(float).values
+    ambiguity = df["Amb"].astype(float).values
+    correlation = df["Corr"].astype(float).values
+    lot_num_b = df["LotNumB"].astype(float).values
+
+    return np.column_stack([
+        ha, pha, la, hb, phb, lb,           # raw gamble features (6)
+        ev_diff, max_outcome_diff,           # cross-gamble context (6)
+        min_outcome_diff, prob_asymmetry,
+        outcome_range_a, outcome_range_b,
+        feedback, ambiguity,                 # design features (4)
+        correlation, lot_num_b,
+    ])
+
+
+CONTEXT_FEATURE_NAMES = [
+    "Ha", "pHa", "La", "Hb", "pHb", "Lb",
+    "ev_diff", "max_outcome_diff", "min_outcome_diff",
+    "prob_asymmetry", "outcome_range_a", "outcome_range_b",
+    "feedback", "ambiguity", "correlation", "lot_num_b",
+]
 
 
 class EVModel:
@@ -287,6 +348,53 @@ class CPTModel:
         return sigmoid(temperature * (vb - va))
 
 
+class ContextModel:
+    """Context-dependent model using gradient boosting on problem features.
+
+    Unlike classical theories that compute V(gamble) independently,
+    this model takes features from BOTH gambles and their relationship
+    as input (Peterson et al. 2021: context-dependence).
+
+    Uses sklearn GradientBoostingRegressor, so fitting and prediction
+    follow a different pathway than the scipy-optimized classical models.
+    """
+
+    name = "Context"
+    is_sklearn_model = True  # flag for pipeline dispatch
+
+    # GBM hyperparameters (conservative to avoid overfitting on OOF predictions)
+    N_ESTIMATORS = 200
+    MAX_DEPTH = 4
+    LEARNING_RATE = 0.1
+    SUBSAMPLE = 0.8
+
+    @staticmethod
+    def fit(gamble_data: GambleData, random_seed: int = 42):
+        """Fit GradientBoostingRegressor on context features -> bRate."""
+        from sklearn.ensemble import GradientBoostingRegressor
+
+        if gamble_data.features is None:
+            raise ValueError("ContextModel requires features in GambleData")
+
+        estimator = GradientBoostingRegressor(
+            n_estimators=ContextModel.N_ESTIMATORS,
+            max_depth=ContextModel.MAX_DEPTH,
+            learning_rate=ContextModel.LEARNING_RATE,
+            subsample=ContextModel.SUBSAMPLE,
+            random_state=random_seed,
+        )
+        estimator.fit(gamble_data.features, gamble_data.brate)
+        return estimator
+
+    @staticmethod
+    def predict(fitted_model, gamble_data: GambleData) -> np.ndarray:
+        """Predict P(choose B) using fitted estimator and context features."""
+        if gamble_data.features is None:
+            raise ValueError("ContextModel requires features in GambleData")
+
+        return np.clip(fitted_model.predict(gamble_data.features), 0.001, 0.999)
+
+
 def _kt_weight(p: np.ndarray, gamma: float) -> np.ndarray:
     """Kahneman-Tversky weighting, vectorized."""
     p_clip = np.clip(p, 1e-10, 1 - 1e-10)
@@ -299,6 +407,6 @@ def _kt_weight(p: np.ndarray, gamma: float) -> np.ndarray:
 
 
 # Registry of all available models
-ALL_MODELS = [EVModel, EUModel, PTModel, CPTModel]
+ALL_MODELS = [EVModel, EUModel, PTModel, CPTModel, ContextModel]
 
 MODEL_REGISTRY = {m.name: m for m in ALL_MODELS}
