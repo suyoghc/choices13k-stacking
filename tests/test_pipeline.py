@@ -10,21 +10,16 @@ Ground truth for model tests:
 - Stacking weights must be on simplex (sum to 1, non-negative)
 """
 
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from stacking.config import DataConfig, StackingConfig, AnalysisConfig
 from stacking.data import load_selections, _validate_selections
 from stacking.models import (
     EVModel, EUModel, PTModel, CPTModel,
     GambleData, predict_choice_probability,
-    apply_power_utility, apply_probability_weight,
 )
 from stacking.stacking import compute_stacking_weights
 from stacking.fitting import compute_mse_loss
@@ -61,7 +56,7 @@ class TestDataValidation:
             "Amb": [False], "Corr": [0],
             "bRate": [1.5],  # INVALID — out of [0,1]
         })
-        with pytest.raises(AssertionError, match="bRate"):
+        with pytest.raises(ValueError, match="bRate"):
             _validate_selections(bad_df)
 
     def test_validate_selections_rejects_negative_n(self):
@@ -74,7 +69,7 @@ class TestDataValidation:
             "Amb": [False], "Corr": [0],
             "bRate": [0.5],
         })
-        with pytest.raises(AssertionError, match="sample size"):
+        with pytest.raises(ValueError, match="sample size"):
             _validate_selections(bad_df)
 
 
@@ -199,44 +194,6 @@ class TestPTModel:
         # PT with lambda=1, gamma=1 should match EU
         pt_pred = PTModel.predict(np.array([0.8, 1.0, 1.0, 1.0]), data)
         np.testing.assert_allclose(pt_pred, eu_pred, atol=1e-6)
-
-
-class TestUtilityFunction:
-
-    def test_power_utility_gains(self):
-        """u(100) with α=0.5 should be √100 = 10."""
-        result = apply_power_utility(100, alpha=0.5, lambda_=1.0)
-        np.testing.assert_allclose(result, 10.0)
-
-    def test_power_utility_losses_with_loss_aversion(self):
-        """u(-100) with α=0.5, λ=2 should be -2·√100 = -20."""
-        result = apply_power_utility(-100, alpha=0.5, lambda_=2.0)
-        np.testing.assert_allclose(result, -20.0)
-
-    def test_utility_of_zero(self):
-        result = apply_power_utility(0, alpha=0.5, lambda_=2.0)
-        assert result == 0.0
-
-
-class TestProbabilityWeighting:
-
-    def test_linear_when_gamma_one(self):
-        """w(p) = p when γ = 1 (no distortion)."""
-        for p in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]:
-            np.testing.assert_allclose(
-                apply_probability_weight(p, gamma=1.0), p, atol=1e-10
-            )
-
-    def test_overweight_small_probs(self):
-        """When γ < 1, small probabilities are overweighted."""
-        w = apply_probability_weight(0.05, gamma=0.7)
-        assert w > 0.05  # overweighted
-
-    def test_boundaries(self):
-        """w(0) = 0, w(1) = 1 always."""
-        for gamma in [0.5, 0.7, 1.0, 1.5]:
-            assert apply_probability_weight(0.0, gamma) == 0.0
-            assert apply_probability_weight(1.0, gamma) == 1.0
 
 
 # ============================================================

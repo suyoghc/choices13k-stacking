@@ -133,7 +133,7 @@ class TestBayesianStackingValidation:
         targets = np.array([0.5, 0.5])
         sample_sizes = np.array([25, 25])
 
-        with pytest.raises(AssertionError, match="probabilities"):
+        with pytest.raises(ValueError, match="probabilities"):
             build_stacking_model(
                 preds, targets, sample_sizes, BayesianStackingConfig()
             )
@@ -146,7 +146,7 @@ class TestBayesianStackingValidation:
         targets = np.array([0.5, 0.5])
         sample_sizes = np.array([25, 0])  # 0 is invalid
 
-        with pytest.raises(AssertionError, match="positive"):
+        with pytest.raises(ValueError, match="positive"):
             build_stacking_model(
                 preds, targets, sample_sizes, BayesianStackingConfig()
             )

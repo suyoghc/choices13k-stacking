@@ -109,53 +109,57 @@ def _validate_selections(df: pd.DataFrame) -> None:
         raise ValueError(f"Missing columns in selections data: {missing}")
 
     # bRate must be in [0, 1] — this is a proportion
-    assert df["bRate"].between(0, 1).all(), (
-        f"bRate values out of [0,1] range. "
-        f"Min={df['bRate'].min()}, Max={df['bRate'].max()}"
-    )
+    if not df["bRate"].between(0, 1).all():
+        raise ValueError(
+            f"bRate values out of [0,1] range. "
+            f"Min={df['bRate'].min()}, Max={df['bRate'].max()}"
+        )
 
     # Probabilities must be in [0, 1]
     for col in ["pHa", "pHb"]:
-        assert df[col].between(0, 1).all(), (
-            f"{col} values out of [0,1] range. "
-            f"Min={df[col].min()}, Max={df[col].max()}"
-        )
+        if not df[col].between(0, 1).all():
+            raise ValueError(
+                f"{col} values out of [0,1] range. "
+                f"Min={df[col].min()}, Max={df[col].max()}"
+            )
 
     # Sample sizes must be positive
-    assert (df["n"] > 0).all(), f"Non-positive sample sizes found"
+    if not (df["n"] > 0).all():
+        raise ValueError("Non-positive sample sizes found")
 
     # No NaN in critical columns
     critical = ["bRate", "Ha", "pHa", "La", "Hb", "pHb", "Lb"]
     for col in critical:
-        assert df[col].notna().all(), f"NaN values in column {col}"
+        if not df[col].notna().all():
+            raise ValueError(f"NaN values in column {col}")
 
 
 def _validate_problems(problems: dict) -> None:
-    """Check raw problem data structure."""
+    """Check raw problem data structure for all problems."""
     if not isinstance(problems, dict):
         raise TypeError(f"Problems must be dict, got {type(problems)}")
 
     if len(problems) == 0:
         raise ValueError("Problems dict is empty")
 
-    # Spot-check first problem
-    first_key = next(iter(problems))
-    first = problems[first_key]
-    if not {"A", "B"} <= set(first.keys()):
-        raise ValueError(
-            f"Problem must have keys 'A' and 'B', got {set(first.keys())}"
-        )
-
-    # Each option should be list of [probability, outcome] pairs
-    for option_name in ["A", "B"]:
-        option = first[option_name]
-        if not isinstance(option, list) or len(option) == 0:
+    for key, problem in problems.items():
+        if not {"A", "B"} <= set(problem.keys()):
             raise ValueError(
-                f"Option {option_name} must be non-empty list, "
-                f"got {type(option)}"
+                f"Problem {key} must have keys 'A' and 'B', "
+                f"got {set(problem.keys())}"
             )
-        for pair in option:
-            if len(pair) != 2:
+
+        # Each option should be list of [probability, outcome] pairs
+        for option_name in ["A", "B"]:
+            option = problem[option_name]
+            if not isinstance(option, list) or len(option) == 0:
                 raise ValueError(
-                    f"Each outcome must be [prob, payoff], got length {len(pair)}"
+                    f"Problem {key}, option {option_name} must be non-empty "
+                    f"list, got {type(option)}"
                 )
+            for pair in option:
+                if len(pair) != 2:
+                    raise ValueError(
+                        f"Problem {key}, option {option_name}: each outcome "
+                        f"must be [prob, payoff], got length {len(pair)}"
+                    )

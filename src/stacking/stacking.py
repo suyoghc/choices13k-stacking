@@ -14,7 +14,7 @@ from sklearn.model_selection import KFold
 
 from .config import StackingConfig, ModelFitConfig
 from .models import GambleData, prepare_gamble_data
-from .fitting import fit_model, compute_mse_loss
+from .fitting import fit_model, compute_mse_loss, compute_cross_entropy_loss
 
 
 def compute_stacking_weights(
@@ -37,9 +37,11 @@ def compute_stacking_weights(
     if n_models == 1:
         return np.array([1.0])
 
+    loss_fn = compute_mse_loss if loss == "mse" else compute_cross_entropy_loss
+
     def objective(w):
         blended = oof_predictions @ w
-        return compute_mse_loss(blended, targets)
+        return loss_fn(blended, targets)
 
     # Simplex constraints: w >= 0, sum(w) = 1
     constraints = {"type": "eq", "fun": lambda w: np.sum(w) - 1.0}

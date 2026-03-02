@@ -35,54 +35,6 @@ def predict_choice_probability(
     return sigmoid(temperature * (value_b - value_a))
 
 
-# --- Gamble valuation functions ---
-# Each takes gamble outcomes/probabilities and model parameters,
-# returns subjective value V(gamble).
-
-
-def compute_expected_value(
-    outcomes: list[list[float]],
-) -> float:
-    """EV: V = Σ p_i · x_i. No free parameters."""
-    return sum(p * x for p, x in outcomes)
-
-
-def apply_power_utility(x: float, alpha: float, lambda_: float) -> float:
-    """Power utility with loss aversion (Tversky & Kahneman 1992).
-
-    u(x) = x^α          if x ≥ 0
-    u(x) = -λ·(-x)^α    if x < 0
-
-    Parameters:
-        alpha: diminishing sensitivity (0 < α ≤ 1)
-        lambda_: loss aversion coefficient (λ > 0; λ > 1 = loss averse)
-    """
-    if x >= 0:
-        return x ** alpha
-    else:
-        return -lambda_ * ((-x) ** alpha)
-
-
-def apply_probability_weight(p: float, gamma: float) -> float:
-    """Kahneman-Tversky probability weighting function.
-
-    w(p) = p^γ / (p^γ + (1-p)^γ)^(1/γ)
-
-    Overweights small probabilities when γ < 1.
-    Linear (no distortion) when γ = 1.
-
-    Parameters:
-        gamma: curvature parameter (0 < γ ≤ 1 typically)
-    """
-    if p <= 0:
-        return 0.0
-    if p >= 1:
-        return 1.0
-    numerator = p ** gamma
-    denominator = (numerator + (1 - p) ** gamma) ** (1 / gamma)
-    return numerator / denominator
-
-
 # --- Model classes ---
 # Each wraps parameter vector → predicted bRate for all problems.
 # Interface: params (flat array) + data → predictions (array of P(B)).
@@ -143,18 +95,22 @@ def prepare_gamble_data(df, problems: dict) -> GambleData:
             outcomes_b[i, j] = x
 
     # --- Validation: spot-check JSON ↔ selections alignment ---
-    # Compare first outcome of gamble A against Ha/pHa columns.
+    # Compare expected values computed from JSON vs CSV columns.
+    # EV is order-independent, so this works regardless of how
+    # outcomes are ordered in the JSON.
     # This catches index-mapping bugs like the one that made
     # every model predict 0.5 (Poldrack §5: the conspiracy paper).
     sample_idx = min(10, n)
     for i in range(sample_idx):
         row = df.iloc[i]
-        assert abs(outcomes_a[i, 0] - row["Ha"]) < 0.1 or abs(probs_a[i, 0] - row["pHa"]) < 0.01, (
-            f"Row {i}: JSON/selections mismatch! "
-            f"JSON A[0]=({probs_a[i,0]:.3f}, {outcomes_a[i,0]:.1f}), "
-            f"selections Ha={row['Ha']}, pHa={row['pHa']}. "
-            f"Check _json_idx mapping."
-        )
+        json_ev_a = np.sum(probs_a[i] * outcomes_a[i])
+        csv_ev_a = row["pHa"] * row["Ha"] + (1 - row["pHa"]) * row["La"]
+        if abs(json_ev_a - csv_ev_a) > 1.0:
+            raise ValueError(
+                f"Row {i}: JSON/CSV EV mismatch! "
+                f"JSON EV(A)={json_ev_a:.2f}, CSV EV(A)={csv_ev_a:.2f}. "
+                f"Check _json_idx mapping."
+            )
 
     return GambleData(
         outcomes_a=outcomes_a,

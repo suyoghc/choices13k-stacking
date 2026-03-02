@@ -97,14 +97,17 @@ def build_stacking_model(
     n_problems, n_models = oof_predictions.shape
 
     # Validate inputs (defensive programming per Poldrack §5)
-    assert oof_predictions.shape[0] == len(observed_brate) == len(sample_sizes), (
-        f"Shape mismatch: predictions {oof_predictions.shape[0]}, "
-        f"brate {len(observed_brate)}, n {len(sample_sizes)}"
-    )
-    assert np.all((oof_predictions >= 0) & (oof_predictions <= 1)), (
-        "OOF predictions must be probabilities in [0,1]"
-    )
-    assert np.all(sample_sizes > 0), "Sample sizes must be positive"
+    if not (oof_predictions.shape[0] == len(observed_brate) == len(sample_sizes)):
+        raise ValueError(
+            f"Shape mismatch: predictions {oof_predictions.shape[0]}, "
+            f"brate {len(observed_brate)}, n {len(sample_sizes)}"
+        )
+    if not np.all((oof_predictions >= 0) & (oof_predictions <= 1)):
+        raise ValueError(
+            "OOF predictions must be probabilities in [0,1]"
+        )
+    if not np.all(sample_sizes > 0):
+        raise ValueError("Sample sizes must be positive")
 
     # Convert bRate to counts for Binomial likelihood
     observed_counts = np.round(observed_brate * sample_sizes).astype(int)
@@ -317,16 +320,16 @@ def build_hierarchical_model(
     n_features = features.shape[1]
 
     # Validate inputs
-    assert oof_predictions.shape[0] == len(observed_brate) == len(sample_sizes), (
-        "Shape mismatch in inputs"
-    )
-    assert features.shape[0] == n_problems, (
-        f"Features have {features.shape[0]} rows, expected {n_problems}"
-    )
-    assert np.all((oof_predictions >= 0) & (oof_predictions <= 1)), (
-        "OOF predictions must be probabilities in [0,1]"
-    )
-    assert np.all(sample_sizes > 0), "Sample sizes must be positive"
+    if not (oof_predictions.shape[0] == len(observed_brate) == len(sample_sizes)):
+        raise ValueError("Shape mismatch in inputs")
+    if features.shape[0] != n_problems:
+        raise ValueError(
+            f"Features have {features.shape[0]} rows, expected {n_problems}"
+        )
+    if not np.all((oof_predictions >= 0) & (oof_predictions <= 1)):
+        raise ValueError("OOF predictions must be probabilities in [0,1]")
+    if not np.all(sample_sizes > 0):
+        raise ValueError("Sample sizes must be positive")
 
     observed_counts = np.round(observed_brate * sample_sizes).astype(int)
 
@@ -557,9 +560,10 @@ def build_mot_model(
     observed_counts = np.round(observed_brate * sample_sizes).astype(int)
 
     # Validate
-    assert np.all((oof_predictions >= 0) & (oof_predictions <= 1)), \
-        "Predictions must be probabilities"
-    assert np.all(sample_sizes > 0), "Sample sizes must be positive"
+    if not np.all((oof_predictions >= 0) & (oof_predictions <= 1)):
+        raise ValueError("Predictions must be probabilities in [0,1]")
+    if not np.all(sample_sizes > 0):
+        raise ValueError("Sample sizes must be positive")
 
     with pm.Model() as model:
         # Mixture proportions: what fraction use each theory
