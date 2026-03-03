@@ -209,12 +209,150 @@ y ~ BetaBinomial(n, μ*κ, (1-μ)*κ)
 
 **Diagnostics:** R-hat = 1.00, ESS = 2176
 
+## Session 7: Production Results & Comparison (2026-03-01)
+
+**Della HPC run completed:**
+- 10-fold CV, 4 chains × 4000 samples, 2000 tune
+- Total runtime: 35.3 minutes
+- All diagnostics passed (R-hat = 1.00, ESS > 2000)
+
+**Production results:**
+| Model | Frequentist | Bayesian Mean | 94% HDI | MOT Usage |
+|-------|-------------|---------------|---------|-----------|
+| EV | 0.0% | 1.1% | [0.0, 2.4] | 1.4% |
+| EU | 0.0% | 0.2% | [0.0, 0.6] | 0.3% |
+| PT | 44.9% | 41.5% | [38.1, 44.6] | 40.0% |
+| **CPT** | **55.1%** | **57.2%** | **[54.1, 60.5]** | **58.3%** |
+
+MOT overdispersion: κ = 21.9 (high = mixture captures heterogeneity well)
+
+**Comparison with Peterson et al. (2021) Science:**
+
+| Aspect | Peterson 2021 | Our analysis |
+|--------|---------------|--------------|
+| Question | "Which model predicts best?" | "How much does each contribute?" |
+| Method | ML prediction competition | Bayesian model stacking |
+| Best accuracy | 84.8% (context-dependent NN) | N/A (stacking, not classification) |
+| Classical theories | "Low predictive accuracy" | CPT > PT; both contribute |
+| Key insight | Context matters | Among classical, CPT wins |
+
+**Reconciliation:**
+- Peterson et al. showed no single classical theory is sufficient — agreed (our ensemble beats any single model by 4.4%)
+- They found context-dependent models beat value-based — we didn't test this
+- We add: *among* classical theories, CPT > PT with tight uncertainty
+- Both agree: EU and EV are empirically dead (<2% combined)
+
+**Key contribution:**
+Peterson asked "can we do better than classical theories?" (yes, with ML)
+We ask "if forced to weight classical theories, which wins?" (CPT, significantly)
+
+**Files created:**
+- `scripts/plot_saved_results.py` — generates figures from saved NetCDF posteriors
+- Fixed arviz trace plot compatibility (let arviz create own figures)
+
+**Figures generated:**
+- `fig1_comparison.pdf` — Frequentist vs Bayesian weights
+- `fig2_posteriors.pdf` — Posterior distributions
+- `fig3_hierarchical.pdf` — Feature effects on weights
+- `fig4_mot.pdf` — MOT proportions + overdispersion
+- `fig5a_bayes_diagnostics.pdf`, `fig5b_mot_diagnostics.pdf` — MCMC traces
+
+## Session 8: Code Review & Fixes (2026-03-01)
+
+**Reviewed full codebase** (built by Opus 4.5 in sessions 1–7). Found and fixed 6 issues:
+
+1. **Bug: `compute_stacking_weights` ignored `loss` parameter** — always used MSE even when `"cross_entropy"` was passed. Wired up `loss_fn` dispatch.
+2. **Weak alignment check in `prepare_gamble_data`** — used `or` (either outcome or probability matches), which could pass by coincidence on misaligned data. Replaced with order-independent EV comparison (`json_ev_a` vs `csv_ev_a`).
+3. **`assert` for data validation** — all data checks in `data.py` and `bayesian.py` used `assert`, which is silently disabled by `python -O`. Replaced with `if/raise ValueError` throughout.
+4. **`_validate_problems` only checked first problem** — now loops through all 14,568 problems.
+5. **Unused standalone functions** — `compute_expected_value`, `apply_power_utility`, `apply_probability_weight` duplicated logic already in model classes. Removed along with their 6 tests (properties already covered by model class tests).
+6. **`sys.path.insert` hack in tests** — redundant with `pip install -e`. Removed.
+
+**Tests:** 46 passing (was 52; removed 6 tests for deleted functions).
+
+**Commit:** `960e6ab` — pushed to main.
+
+## Session 9: Context-Dependent Model (2026-03-02)
+
+**Motivation:** Peterson et al. (2021) showed context-dependent models (84.8% accuracy) far exceeded classical theories. Classical theories compute V(gamble) independently, but human decisions depend on the *relationship* between the two gambles in the choice set. Adding a context-dependent model answers: "how much do classical theories contribute beyond a data-driven context model?"
+
+**Built:**
+- Extended `GambleData` with optional `features` field (backward compatible)
+- `_build_context_features()` computes 16 features:
+  - Raw gamble features (6): Ha, pHa, La, Hb, pHb, Lb
+  - Cross-gamble context features (6): ev_diff, max/min outcome diffs, prob_asymmetry, outcome ranges
+  - Design variables (4): feedback, ambiguity, correlation, LotNumB
+- `ContextModel` class wrapping sklearn `GradientBoostingRegressor` (200 trees, depth 4, lr 0.1, subsample 0.8)
+- Pipeline dispatch via `is_sklearn_model` flag — sklearn models use `fit()`/`predict()` instead of scipy MLE
+- Updated `run_bayesian_full.py` to include all 5 models; fixed hardcoded index in summary output
+- 4 new tests (50 total), all passing
+
+**Draft methods/results section** written to `draft_methods_results.md` (gitignored).
+
+**Commits:** `049f809`, `7282e58` — pushed to main.
+
+**Next:** Run 5-model stacking + Bayesian analyses on Della.
+
+## Session 10: 5-Model Production Results (2026-03-02)
+
+**Della HPC run completed:**
+- 5 models (EV, EU, PT, CPT, Context), 10-fold CV, 4 chains × 4000 samples, 2000 tune
+- Total runtime: 35.7 minutes
+- All diagnostics passed (R-hat = 1.00, ESS > 900 across all models)
+
+**Production results — 5-model stacking:**
+
+| Model | Freq. Weight | Bayesian Mean | 94% HDI | MOT Usage |
+|-------|-------------|---------------|---------|-----------|
+| EV | 0.0% | 0.3% | [0.0, 1.1] | 0.3% |
+| EU | 0.0% | 0.4% | [0.0, 1.1] | 0.4% |
+| PT | 0.0% | 0.9% | [0.0, 2.2] | 0.9% |
+| CPT | 0.1% | 1.5% | [0.0, 2.9] | 1.5% |
+| **Context** | **99.9%** | **96.8%** | **[95.7, 98.1]** | **96.7%** |
+
+**OOF MSE:** Context ~0.010 vs CPT ~0.023 (57% better)
+
+**Hierarchical Bayesian (5-model):**
+- Context baseline weight: 97.0%
+- Feature effects minimal — Context already captures cross-gamble structure
+- ESS=904, R-hat=1.00
+
+**MOT overdispersion:** κ = 143.5 (up from 21.9 in 4-model)
+- Much tighter fit — Context explains far more variance than classical theories alone
+
+**Key findings:**
+
+1. **Context model crushes classical theories** — 57% MSE reduction over CPT. Cross-gamble features (EV differences, outcome asymmetries, probability contrasts) capture what classical value functions miss.
+
+2. **Classical theories contribute almost nothing beyond context** — CPT drops from 57% (4-model) to 1.5% (5-model). The features that made CPT valuable are subsumed by the GBR's cross-gamble features.
+
+3. **Two-level story for the paper:**
+   - Level 1 (classical only): CPT > PT >> EU ≈ EV. Rank-dependent probability weighting wins among classical theories.
+   - Level 2 (with context): Context >> all classical combined. Decisions depend on gamble *relationships*, not independent values — confirming Peterson et al.'s core finding with Bayesian uncertainty.
+
+4. **κ jumped 21.9 → 143.5** — the mixture model fits much tighter with Context, less residual heterogeneity.
+
+5. **94% HDI for Context [95.7%, 98.1%]** excludes 95%, meaning we're highly confident Context gets >95% weight.
+
+**Reconciliation with Peterson et al. (2021):**
+- Peterson: context-dependent NN gets 84.8% accuracy, far exceeding classical theories
+- Our analysis: Context gets 96.8% of Bayesian stacking weight [95.7%, 98.1%]
+- Both confirm the same core insight: decisions are context-dependent, not value-based
+- We add Bayesian uncertainty quantification to their finding
+
+**Updated draft_methods_results.md** with 5-model results (two-level narrative).
+
 ## Next Steps
 
 1. ~~Vectorize CPT~~ ✓
 2. ~~Bayesian stacking~~ ✓
 3. ~~Hierarchical Bayesian stacking~~ ✓
 4. ~~MOT (Mixture of Theories)~~ ✓
-5. Della HPC for full runs
-6. Paper figures (done for main results)
-7. Write methods/results sections
+5. ~~Della HPC for full runs~~ ✓
+6. ~~Paper figures~~ ✓
+7. ~~Draft methods/results~~ ✓
+8. ~~Add context-dependent model~~ ✓
+9. ~~Run 5-model analysis on Della~~ ✓
+10. ~~Update methods/results with 5-model results~~ ✓
+11. Update figures for 5-model results (copy .nc files from Della)
+12. Write Introduction and Discussion sections
