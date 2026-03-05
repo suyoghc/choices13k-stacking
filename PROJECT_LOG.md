@@ -342,6 +342,36 @@ We ask "if forced to weight classical theories, which wins?" (CPT, significantly
 
 **Updated draft_methods_results.md** with 5-model results (two-level narrative).
 
+## Session 11: Figures & Paper Draft (2026-03-02)
+
+**Two-level figures generated:**
+- Rewrote `scripts/plot_saved_results.py` for two-level narrative
+- Loads both 4-model and 5-model results (renamed: `*_4model.nc`, `*_5model.nc`)
+- 6 new figures:
+  - `fig1_classical_weights` — Frequentist + Bayesian bar charts (CPT 57%, PT 42%)
+  - `fig2_classical_posteriors` — KDE posteriors (Bayesian + MOT, classical only)
+  - `fig3_hierarchical` — Feature effects forest plot (classical only)
+  - `fig4_context_dominance` — 5-model weights with zoomed classical panel
+  - `fig5_mot_comparison` — 4-model vs 5-model MOT + kappa shift (21.9 → 143.5)
+  - `fig6a/b_diagnostics` — MCMC traces for 5-model runs
+
+**Complete paper draft written** (`draft_methods_results.md`, gitignored):
+- Added Introduction (~6 paragraphs):
+  - Classical theory hierarchy and empirical landscape
+  - Peterson et al. (2021) and choices13k
+  - The gap: no uncertainty quantification among classical theories
+  - Bayesian stacking as methodological solution
+  - Two-level contribution preview
+- Added Discussion (~5 subsections):
+  - CPT > PT: rank-dependent weighting empirically validated at scale
+  - Context-dependence as failure of independent valuation, not utility functions
+  - Kappa story (21.9 → 143.5): classical mixture misses context
+  - 6 limitations (stacking ≠ cognition, aggregate-level, incomplete theory set, black-box context model, post-hoc features, no individual differences)
+  - 4 future directions (SHAP, individual-level stacking, other datasets, interpretable context models)
+- Total: ~4,500 words, 337 lines
+
+**Commits:** `6b27a32` — figures + result files + plotting script pushed to main.
+
 ## Next Steps
 
 1. ~~Vectorize CPT~~ ✓
@@ -354,5 +384,8 @@ We ask "if forced to weight classical theories, which wins?" (CPT, significantly
 8. ~~Add context-dependent model~~ ✓
 9. ~~Run 5-model analysis on Della~~ ✓
 10. ~~Update methods/results with 5-model results~~ ✓
-11. Update figures for 5-model results (copy .nc files from Della)
-12. Write Introduction and Discussion sections
+11. ~~Update figures for 5-model results~~ ✓
+12. ~~Write Introduction and Discussion~~ ✓
+13. Feature importance / SHAP on Context model
+14. Clean up repo for sharing (README, dependency pinning)
+15. Robustness checks (GBR hyperparams, feedback split, leave-one-feature-out)
